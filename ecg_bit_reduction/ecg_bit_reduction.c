@@ -1,4 +1,5 @@
 #include "ecg_bit_reduction.h"
+#include "csv_writers.h"
 #include "data_processing.h"
 #include <math.h>
 #include <stdbool.h>
@@ -6,37 +7,37 @@
 #include <stdlib.h>
 #include <string.h>
 
-// --- Defines and macros ---
+/* --- Defines and macros ---
 
-// Bit reduction algorithm definitions
+/* Bit reduction algorithm definitions */
 #define BR_THRESHOLD_AMP_DIFF_TO_RESET 100              // 0.01mV
-#define BR_THRESHOLD_MEAN_DIFF         233333           // 20mv
-#define BR_THRESHOLD_SUCCESSIVE_DIFF   11666            // 1mv
-#define BR_MEAN_SAMPLE_COUNT_RES       0.0009765625f    // 1/1024
-#define BR_MAX_SETTLING_TIME_SAMPLES   80               // SAMPLES
+#define BR_THRESHOLD_MEAN_DIFF         233333           // 20mV
+#define BR_THRESHOLD_SUCCESSIVE_DIFF   11666            // 1mV
+#define BR_MEAN_SAMPLE_COUNT_RES       0.0009765625f    // 1/1024 samples
+#define BR_MAX_SETTLING_TIME_SAMPLES   80               // Samples
 #define BR_MAX_SAMPLES_SINCE_LAST_HIGH 90               // Samples
 #define BR_MSB_TO_REMOVE               5
 #define BR_LSB_TO_REMOVE               7
 
 /*
- * MSB_THRSHOLD Formula   (12800000/2)/(2^MSB_TO_REMOVE)
- * 6400000/32
- * 20000 bit reduced threshold
- */
+MSB_THRSHOLD Formula   (12800000/2)/(2^MSB_TO_REMOVE)
+6400000/32
+20000 bit reduced threshold
+*/
 #define BR_MSB_THRSHOLD                200000
 
 /*
- * LSB_FACTOR   (2^LSB_TO_REMOVE)
- * 2^7 = 128
+LSB_FACTOR   (2^LSB_TO_REMOVE)
+2^7 = 128
  */
 #define BR_LSB_FACTOR                  128.0f
 
-// High Pass Filter definitions
+/* High Pass Filter definitions */
 #define HP_FILTER_SIZE                 3
 #define HP_FILTER_COEFF_LEN_A          3
 #define HP_FILTER_COEFF_LEN_B          3
 
-// --- Globals ---
+/* --- Globals --- */
 
 static const float gflHighpassCoeffiecientsA[] = {1.f, -1.999167f, 0.9991673f};
 static const float gflHighpassCoeffiecientsB[] = {0.9995835f, -1.999167f, 0.9995835f};
@@ -50,13 +51,13 @@ static uint8_t  gbSamplesSinceLastHigh[MAX_ECG] = {0};
 
 static bool gfResetFlagECG[MAX_ECG] = {false, false, false};
 
-// --- Functions ---
+/* --- Functions --- */
 
 static bool ECGBitReduction_CheckRestartFilter(uint32_t bRawSample, ecg_sens_id nECGId, bool fRestart)
 {
     int32_t bSuccesiveDifference = 0;
 
-    // Check arguments
+    /* Check arguments */
     if (nECGId >= MAX_ECG)
     {
         return false;
@@ -71,10 +72,10 @@ static bool ECGBitReduction_CheckRestartFilter(uint32_t bRawSample, ecg_sens_id 
         return true;
     }
 
-    // Calculate mean
+    /* Calculate mean */
     gflMeanValue[nECGId] = ((1.0 - BR_MEAN_SAMPLE_COUNT_RES) * gflMeanValue[nECGId] + (BR_MEAN_SAMPLE_COUNT_RES) * (float)bRawSample);
 
-    // Calculate difference of successive samples
+    /* Calculate difference of successive samples */
     bSuccesiveDifference  = bRawSample - gbPreviousECG[nECGId];
     bSuccesiveDifference  = abs(bSuccesiveDifference);
     gbPreviousECG[nECGId] = bRawSample;
@@ -100,22 +101,22 @@ static bool ECGBitReduction_CheckRestartFilter(uint32_t bRawSample, ecg_sens_id 
      */
     if (gfHighAmpActivatedFlag[nECGId])
     {
-        // if settling time is reached or ampltitude is less than lower bound,
-        // reset filter
+        /* if settling time is reached or ampltitude is less than lower bound,
+         reset filter */
         if ((gbSamplesSinceLastHigh[nECGId] > BR_MAX_SETTLING_TIME_SAMPLES) || (bSuccesiveDifference < BR_THRESHOLD_AMP_DIFF_TO_RESET))
         {
             gfHighAmpActivatedFlag[nECGId] = false;
 
-            // if not saturated then reset,
-            // note that if it is saturated, don't reset, wait for next high amp
-            // trigger
+            /* if not saturated then reset,
+            note that if it is saturated, don't reset, wait for next high amp
+            trigger */
             if (bSuccesiveDifference > 0)
             {
                 return true;
             }
         }
     }
-    // keep count of num samples since high amplitude to track settling time
+    /* keep count of num samples since high amplitude to track settling time */
     gbSamplesSinceLastHigh[nECGId]++;
     if (gbSamplesSinceLastHigh[nECGId] > BR_MAX_SAMPLES_SINCE_LAST_HIGH)
     {
@@ -128,7 +129,7 @@ static int16_t ECGBitReduction_LSBRemoval(float bSample)
 {
     float flProcessedLSB = 0;
 
-    // remove lsb and return
+    /* remove lsb and return */
     flProcessedLSB = (float)(bSample) / BR_LSB_FACTOR;
 
     return (int16_t)(floorf(flProcessedLSB));
@@ -138,22 +139,24 @@ static float ECGBitReduction_MSBRemoval(uint32_t bSample, ecg_sens_id nECGId, bo
 {
     float flProcessedMSB = 0;
 
-    // Check arguments
+    /* Check arguments */
     if (nECGId >= MAX_ECG)
     {
         return 0;
     }
 
-    // Check_restart
+    /* Check_restart */
     gfResetFlagECG[nECGId] = ECGBitReduction_CheckRestartFilter(bSample, nECGId, fRestart);
+    CSVW_WriteCSVSingle("check_reset.csv", (float)gfResetFlagECG[nECGId], 2);
 
-    // Filter data
+    /* Filter data */
     flProcessedMSB = digital_filter((float)bSample, gflHighpassInput[nECGId], gflHighpassOutput[nECGId], gflHighpassCoeffiecientsA, gflHighpassCoeffiecientsB, HP_FILTER_COEFF_LEN_A, HP_FILTER_COEFF_LEN_B, HP_FILTER_SIZE, gfResetFlagECG[nECGId], (float)bSample);
+    CSVW_WriteCSVSingle("1_filter_float.csv", (float)flProcessedMSB, 2);
 
-    // Reset flt flag
+    /* Reset flt flag */
     gfResetFlagECG[nECGId] = false;
 
-    // Remove msb
+    /* Remove msb */
     if ((flProcessedMSB >= BR_MSB_THRSHOLD) || (flProcessedMSB <= -1 * BR_MSB_THRSHOLD))
     {
         flProcessedMSB = (int32_t)(BR_MSB_THRSHOLD) * (flProcessedMSB / (int32_t)abs(flProcessedMSB));
@@ -166,15 +169,16 @@ int16_t ECGBitReduction_SampleReduction(uint32_t bSample, ecg_sens_id nECGId, bo
 {
     float flProcessedMSB = 0;
 
-    // Check arguments
+    /* Check arguments */
     if (nECGId >= MAX_ECG)
     {
         return 0;
     }
 
-    // Remove MSB
+    /* Remove MSB */
     flProcessedMSB = ECGBitReduction_MSBRemoval(bSample, nECGId, fRestart);
 
-    // Remove LSB
+    /* Remove LSB */
     return ECGBitReduction_LSBRemoval(flProcessedMSB);
 }
+
